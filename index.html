@@ -10,6 +10,8 @@
   <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+  <!-- QR Code generator — no API key needed, runs fully in browser -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 
   <style>
     *, *::before, *::after { box-sizing:border-box; margin:0; padding:0; }
@@ -716,6 +718,68 @@
     .nav-feed-btn { font-size:13px; }
     .nav-avatar-btn { background:none; border:none; cursor:pointer; padding:0; border-radius:50%; transition:opacity .18s; }
     .nav-avatar-btn:hover { opacity:.8; }
+
+    /* ── QR CODE MODAL ── */
+    .qr-overlay {
+      position:fixed; inset:0; background:rgba(0,0,0,0.75);
+      z-index:9000; display:flex; align-items:center; justify-content:center;
+      padding:20px; backdrop-filter:blur(6px);
+      animation:fadeIn .2s ease;
+    }
+    .qr-modal {
+      background:var(--bg2); border:1px solid var(--border);
+      border-radius:20px; padding:28px 24px;
+      width:100%; max-width:340px;
+      display:flex; flex-direction:column; align-items:center; gap:16px;
+      animation:slideUp .25s ease;
+    }
+    .qr-modal-header {
+      display:flex; justify-content:space-between; align-items:center;
+      width:100%;
+    }
+    .qr-modal-title {
+      font-family:var(--font-display); font-size:18px; font-weight:700;
+    }
+    .qr-close-btn {
+      background:var(--bg3); border:none; color:var(--muted);
+      width:30px; height:30px; border-radius:50%; cursor:pointer;
+      font-size:14px; display:flex; align-items:center; justify-content:center;
+      transition:all .18s;
+    }
+    .qr-close-btn:hover { background:var(--red); color:#fff; }
+    .qr-doctor-name {
+      font-size:15px; font-weight:700; color:var(--text); text-align:center;
+    }
+    .qr-code-wrap {
+      background:var(--bg3); border-radius:14px; padding:16px;
+      display:flex; align-items:center; justify-content:center;
+      border:2px solid rgba(0,230,118,0.2);
+    }
+    .qr-code-wrap img, .qr-code-wrap canvas {
+      display:block; border-radius:6px;
+    }
+    .qr-url-text {
+      font-size:11px; color:var(--muted); text-align:center;
+      word-break:break-all; max-width:280px; line-height:1.5;
+    }
+    .qr-btn-row {
+      display:flex; gap:10px; width:100%;
+    }
+    .qr-download-btn { flex:1; text-align:center; }
+    .qr-copy-btn { flex-shrink:0; }
+    .qr-hint {
+      font-size:12px; color:var(--muted); text-align:center; line-height:1.6;
+    }
+
+    /* QR button on profile */
+    .btn-qr-download {
+      background:rgba(0,230,118,0.1); color:var(--green);
+      font-weight:700; padding:10px 18px; border-radius:10px;
+      font-size:14px; border:1.5px solid rgba(0,230,118,0.3);
+      cursor:pointer; transition:all .18s; font-family:var(--font-body);
+      margin-top:8px; width:100%;
+    }
+    .btn-qr-download:hover { background:rgba(0,230,118,0.2); border-color:var(--green); }
 
     /* ── SPLASH ── */
     .splash { display:flex; flex-direction:column; align-items:center; justify-content:center; height:100vh; gap:16px; }
@@ -1479,10 +1543,31 @@
     }
 
     function mySessionTabHTML() {
+      var uid  = currentUser ? currentUser.uid : "";
+      var name = (myProfile && myProfile.name) || (currentUser && currentUser.displayName) || "Doctor";
       return `
         <div class="my-session-body">
           <div class="my-session-heading">My Session</div>
           <div class="my-session-sub">Create and manage your clinic appointment session.</div>
+
+          <!-- QR Code card — always visible in doctor panel -->
+          <div class="qr-card" id="qr-panel-card">
+            <div class="qr-card-left">
+              <div class="qr-card-title">📲 Your Patient QR Code</div>
+              <div class="qr-card-desc">Patients scan this to open your profile and see live token status instantly.</div>
+              <div class="qr-card-btns">
+                <button class="btn-primary" id="btn-show-qr"
+                  data-uid="${x(uid)}" data-name="${x(name)}">
+                  📲 Show &amp; Download QR
+                </button>
+                <button class="btn-outline" id="btn-copy-profile-link" data-uid="${x(uid)}">
+                  🔗 Copy Profile Link
+                </button>
+              </div>
+            </div>
+            <div class="qr-card-preview" id="qr-mini-preview"></div>
+          </div>
+
           ${myAppointment ? activeSessionSummaryHTML() : createFormHTML()}
         </div>`;
     }
@@ -2097,6 +2182,27 @@
       on("create-btn",      createAppointment);
       on("btn-end-summary", endSession);
       on("btn-go-operate",  function(){ switchTab("operating"); });
+
+      // QR Code buttons in My Session tab
+      on("btn-show-qr", function(){
+        var btn = eid("btn-show-qr");
+        if (btn && currentUser) {
+          showQRModal(btn.dataset.uid, btn.dataset.name);
+          // Also render mini preview in card
+          renderMiniQR();
+        }
+      });
+      on("btn-copy-profile-link", function(){
+        var btn = eid("btn-copy-profile-link");
+        if (btn && btn.dataset.uid) {
+          copyText(getProfileURL(btn.dataset.uid));
+          toast("🔗 Profile link copied!");
+        }
+      });
+
+      // Auto-render mini QR in background
+      renderMiniQR();
+
       // GPS button in create form
       on("btn-loc-gps", async function(){
         var btn = eid("btn-loc-gps");
@@ -2335,6 +2441,9 @@
                 <div class="prof-actions">
                   ${isMe ? `
                     <button class="btn-edit-profile" id="prof-edit">✏️ Edit Profile</button>
+                    <button class="btn-qr-download" id="prof-qr" data-uid="${x(uid)}" data-name="${x(prof.name||"Doctor")}">
+                      📲 QR Code
+                    </button>
                   ` : `
                     <button class="btn-follow ${following?"btn-following":""}" id="prof-follow" data-uid="${x(uid)}">
                       ${following ? "✅ Following" : "➕ Follow"}
@@ -2397,6 +2506,13 @@
       on("nav-feed",    function(){ go("feed"); });
       on("nav-my-profile", function(){ if(currentUser) go("profile", myProfile||{uid:currentUser.uid}); });
       on("prof-edit",   function(){ go("edit-profile"); });
+      // QR Code button — only on own profile
+      var qrBtn = eid("prof-qr");
+      if (qrBtn) {
+        qrBtn.addEventListener("click", function(){
+          showQRModal(qrBtn.dataset.uid, qrBtn.dataset.name);
+        });
+      }
       var followBtn = eid("prof-follow");
       if (followBtn) {
         followBtn.addEventListener("click", function(){
@@ -2615,10 +2731,136 @@
 
     /* ── Also add profile link to public board cards ─── */
 
+    /* ════════════════════════════════════════════════════
+       QR CODE — generates profile URL QR, shows modal, downloads PNG
+    ════════════════════════════════════════════════════ */
+    function getProfileURL(uid) {
+      // Build absolute URL with ?profile=UID so QR scan lands on that doctor's page
+      var base = window.location.href.split("?")[0].split("#")[0];
+      return base + "?profile=" + uid;
+    }
+
+    function showQRModal(uid, doctorName) {
+      // Remove any existing modal
+      var old = document.getElementById("qr-modal-overlay");
+      if (old) old.remove();
+
+      var profileUrl = getProfileURL(uid);
+
+      // Create overlay
+      var overlay = document.createElement("div");
+      overlay.id = "qr-modal-overlay";
+      overlay.className = "qr-overlay";
+      overlay.innerHTML = `
+        <div class="qr-modal">
+          <div class="qr-modal-header">
+            <div class="qr-modal-title">📲 Scan to Visit Profile</div>
+            <button class="qr-close-btn" id="qr-close">✕</button>
+          </div>
+          <div class="qr-doctor-name">${x(doctorName)}</div>
+          <div class="qr-code-wrap" id="qr-code-container"></div>
+          <div class="qr-url-text">${x(profileUrl)}</div>
+          <div class="qr-btn-row">
+            <button class="btn-primary qr-download-btn" id="qr-download-btn">
+              ⬇️ Download QR Code
+            </button>
+            <button class="btn-outline qr-copy-btn" id="qr-copy-link">
+              🔗 Copy Link
+            </button>
+          </div>
+          <div class="qr-hint">Patients scan this with their phone camera to open your profile</div>
+        </div>`;
+
+      document.body.appendChild(overlay);
+
+      // Generate QR code into the container
+      var container = document.getElementById("qr-code-container");
+      var qr = new QRCode(container, {
+        text:          profileUrl,
+        width:         220,
+        height:        220,
+        colorDark:     "#ffffff",
+        colorLight:    "#111318",
+        correctLevel:  QRCode.CorrectLevel.H,
+      });
+
+      // Close button
+      document.getElementById("qr-close").addEventListener("click", function(){
+        overlay.remove();
+      });
+      // Close on backdrop click
+      overlay.addEventListener("click", function(e){
+        if (e.target === overlay) overlay.remove();
+      });
+
+      // Download button
+      document.getElementById("qr-download-btn").addEventListener("click", function(){
+        // Wait a tick for QR canvas to render
+        setTimeout(function(){
+          var canvas = container.querySelector("canvas");
+          if (!canvas) { toast("QR not ready yet, try again."); return; }
+
+          // Create a new canvas with padding + label for nice download
+          var pad    = 24;
+          var label  = doctorName + " — Waitless";
+          var final  = document.createElement("canvas");
+          var ctx    = final.getContext("2d");
+          final.width  = canvas.width  + pad * 2;
+          final.height = canvas.height + pad * 2 + 36;
+
+          // Dark background
+          ctx.fillStyle = "#111318";
+          ctx.fillRect(0, 0, final.width, final.height);
+
+          // QR image
+          ctx.drawImage(canvas, pad, pad);
+
+          // Label below QR
+          ctx.fillStyle = "#00e676";
+          ctx.font      = "bold 15px sans-serif";
+          ctx.textAlign = "center";
+          ctx.fillText(label, final.width / 2, canvas.height + pad + 22);
+
+          // Trigger download
+          var link      = document.createElement("a");
+          link.download = "waitless-qr-" + (doctorName||"profile").replace(/\s+/g,"-").toLowerCase() + ".png";
+          link.href     = final.toDataURL("image/png");
+          link.click();
+          toast("✅ QR Code downloaded!");
+        }, 100);
+      });
+
+      // Copy link button
+      document.getElementById("qr-copy-link").addEventListener("click", function(){
+        copyText(profileUrl);
+        toast("🔗 Profile link copied!");
+      });
+    }
+
+    /* ── Handle ?profile=UID in URL on page load ─────── */
+    function checkURLParams() {
+      var params = new URLSearchParams(window.location.search);
+      var profileUID = params.get("profile");
+      if (profileUID) {
+        // Load that doctor's profile and navigate to it
+        loadProfile(profileUID).then(function(prof){
+          if (prof) {
+            go("profile", prof);
+          } else {
+            // Profile doesn't exist yet — show a placeholder
+            go("profile", { uid: profileUID, name: "Doctor", waitlessId: "", followerCount: 0 });
+          }
+        }).catch(function(){
+          go("home");
+        });
+      }
+    }
+
     /* ── Boot ─────────────────────────────────────────── */
     loadFollowing();  // load followed IDs from localStorage on startup
     startFeedListener(); // start listening for feed appointments
     paint();
+    checkURLParams(); // handle ?profile=UID from QR code scans
 
     auth.onAuthStateChanged(async function(user) {
       currentUser = user;
